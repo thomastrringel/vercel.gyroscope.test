@@ -1,0 +1,5 @@
+{
+  "name": "Gyroscope Explorer",
+  "description": "A real-time gyroscope sensor data visualizer for mobile devices.",
+  "requestFramePermissions": []
+}
