@@ -206,19 +206,18 @@ export default function App() {
 
   // --- Navigation Helpers ---
 
-  const switchTab = (dir: 'left' | 'right') => {
-    if (dir === 'left' && activeTab === 'gyro') setActiveTab('magnetic');
-    if (dir === 'right' && activeTab === 'magnetic') setActiveTab('gyro');
-  };
+  const goToGyro = () => setActiveTab('gyro');
+  const goToMag = () => setActiveTab('magnetic');
 
   const handleDragEnd = (_: any, info: any) => {
-    const threshold = 50;
-    const velocityThreshold = 500;
+    // Highly sensitive for mobile devices
+    const threshold = 30;
+    const velocityThreshold = 100;
     
     if (info.offset.x < -threshold || info.velocity.x < -velocityThreshold) {
-      switchTab('left');
+      if (activeTab === 'gyro') setActiveTab('magnetic');
     } else if (info.offset.x > threshold || info.velocity.x > velocityThreshold) {
-      switchTab('right');
+      if (activeTab === 'magnetic') setActiveTab('gyro');
     }
   };
 
@@ -397,20 +396,33 @@ export default function App() {
   );
 
   return (
-    <div className="fixed inset-0 bg-slate-50 text-slate-900 font-sans overflow-hidden">
-      {/* Header Container */}
-      <div className="absolute top-0 left-0 w-full z-20 px-6 py-8 flex justify-center gap-2">
-        <div className={`w-1.5 h-1.5 rounded-full transition-colors ${activeTab === 'gyro' ? 'bg-indigo-500' : 'bg-slate-300'}`} />
-        <div className={`w-1.5 h-1.5 rounded-full transition-colors ${activeTab === 'magnetic' ? 'bg-rose-500' : 'bg-slate-300'}`} />
+    <div className="fixed inset-0 bg-slate-50 text-slate-900 font-sans overflow-hidden select-none">
+      {/* Navigation Dots - Now clickable as a fallback */}
+      <div className="absolute top-0 left-0 w-full z-50 px-6 py-10 flex justify-center gap-5">
+        <button 
+          onClick={goToGyro}
+          className="p-2 transition-transform active:scale-90"
+          aria-label="Go to Gyroscope"
+        >
+          <div className={`w-2.5 h-2.5 rounded-full transition-all duration-300 ${activeTab === 'gyro' ? 'bg-indigo-600 ring-4 ring-indigo-100 scale-125' : 'bg-slate-300'}`} />
+        </button>
+        <button 
+          onClick={goToMag}
+          className="p-2 transition-transform active:scale-90"
+          aria-label="Go to Magnetometer"
+        >
+          <div className={`w-2.5 h-2.5 rounded-full transition-all duration-300 ${activeTab === 'magnetic' ? 'bg-rose-600 ring-4 ring-rose-100 scale-125' : 'bg-slate-300'}`} />
+        </button>
       </div>
 
       <motion.div
         drag="x"
+        dragDirectionLock
         dragConstraints={{ left: 0, right: 0 }}
-        dragElastic={0.2}
+        dragElastic={0.8}
         onDragEnd={handleDragEnd}
         animate={{ x: activeTab === 'gyro' ? '0%' : '-100%' }}
-        transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+        transition={{ type: 'spring', stiffness: 300, damping: 35 }}
         style={{ touchAction: 'pan-y' }}
         className="h-full flex w-full cursor-grab active:cursor-grabbing"
       >
