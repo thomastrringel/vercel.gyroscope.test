@@ -213,8 +213,13 @@ export default function App() {
 
   const handleDragEnd = (_: any, info: any) => {
     const threshold = 50;
-    if (info.offset.x < -threshold) switchTab('left');
-    if (info.offset.x > threshold) switchTab('right');
+    const velocityThreshold = 500;
+    
+    if (info.offset.x < -threshold || info.velocity.x < -velocityThreshold) {
+      switchTab('left');
+    } else if (info.offset.x > threshold || info.velocity.x > velocityThreshold) {
+      switchTab('right');
+    }
   };
 
   // --- Broadcast Utils ---
@@ -406,6 +411,7 @@ export default function App() {
         onDragEnd={handleDragEnd}
         animate={{ x: activeTab === 'gyro' ? '0%' : '-100%' }}
         transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+        style={{ touchAction: 'pan-y' }}
         className="h-full flex w-full cursor-grab active:cursor-grabbing"
       >
         {/* All content wrapped in scrollable containers for small screens */}
