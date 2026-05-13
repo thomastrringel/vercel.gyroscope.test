@@ -23,6 +23,7 @@ interface MagData {
   x: number | null;
   y: number | null;
   z: number | null;
+  isSimulated?: boolean;
 }
 
 interface AccelData {
@@ -31,15 +32,13 @@ interface AccelData {
   z: number | null;
 }
 
-// Global sensor types for experimental APIs since standard TS doesn't have them
+// Global sensor types for experimental APIs
 declare global {
   interface Window {
     Magnetometer: any;
     Accelerometer: any;
   }
 }
-
-// --- Main App Component ---
 
 export default function App() {
   // Navigation State
@@ -52,7 +51,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
 
   // Magnetometer State
-  const [magData, setMagData] = useState<MagData>({ x: 0, y: 0, z: 0 });
+  const [magData, setMagData] = useState<MagData>({ x: 0, y: 0, z: 0, isSimulated: false });
   const [accelData, setAccelData] = useState<AccelData>({ x: 0, y: 0, z: 0 });
   const [calculatedHeading, setCalculatedHeading] = useState<number | null>(null);
   const [tiltAmount, setTiltAmount] = useState<number | null>(null);
@@ -68,40 +67,39 @@ export default function App() {
 
   /**
    * Calculates the tilt-compensated heading and overall tilt.
-   * Uses standard mathematical formulas to correct magnetometer readings 
-   * based on the pitch and roll derived from accelerometer (gravity).
    */
-  const calculateCompassValues = (mag: MagData, acc: AccelData) => {
-    if (mag.x === null || acc.x === null) return;
+  const calculateCompassValues = useCallback((mag: MagData, acc: AccelData) => {
+    // 1. Calculate Tilt from Accelerometer (Pitch and Roll)
+    const ax = acc.x ?? 0;
+    const ay = acc.y ?? 0;
+    const az = acc.z ?? 9.81; // Fallback to gravity if missing
 
-    // 1. Calculate Pitch and Roll from Accelerometer
-    // Note: This assumes acc values include gravity (m/s^2)
-    const pitch = Math.atan2(acc.y, Math.sqrt(acc.x * acc.x + acc.z * acc.z));
-    const roll = Math.atan2(-acc.x, acc.z);
+    const pitch = Math.atan2(ay, Math.sqrt(ax * ax + az * az));
+    const roll = Math.atan2(-ax, az);
 
-    // 2. Displayable tilt (magnitude of pitch/roll deviation from vertical)
     const tiltDeg = Math.sqrt(pitch * pitch + roll * roll) * (180 / Math.PI);
     setTiltAmount(Math.min(90, tiltDeg));
 
-    // 3. Tilt-compensated Magnetometer readings (Xh, Yh)
-    // We project the 3D magnetic vector onto the horizontal plane
-    const cosP = Math.cos(pitch);
-    const sinP = Math.sin(pitch);
-    const cosR = Math.cos(roll);
-    const sinR = Math.sin(roll);
+    // 2. Heading Calculation
+    // If we have real magnetometer data, we use the formula
+    if (mag.x !== null && mag.y !== null && mag.z !== null && !mag.isSimulated) {
+      const cosP = Math.cos(pitch);
+      const sinP = Math.sin(pitch);
+      const cosR = Math.cos(roll);
+      const sinR = Math.sin(roll);
 
-    const xh = mag.x * cosP + mag.z * sinP;
-    const yh = mag.x * sinR * sinP + mag.y * cosR - mag.z * sinR * cosP;
+      const xh = mag.x * cosP + mag.z * sinP;
+      const yh = mag.x * sinR * sinP + mag.y * cosR - mag.z * sinR * cosP;
 
-    // 4. Calculate Heading in Degrees
-    let heading = Math.atan2(-yh, xh) * (180 / Math.PI);
-    if (heading < 0) heading += 360;
-
-    setCalculatedHeading(heading);
-  };
+      let heading = Math.atan2(-yh, xh) * (180 / Math.PI);
+      if (heading < 0) heading += 360;
+      setCalculatedHeading(heading);
+    } 
+    // Otherwise fallback to alpha/orientation data (handled in handleOrientation)
+  }, []);
 
   /**
-   * Handle Orientation for Page 1
+   * Handle Orientation for Page 1 & Compass Fallback
    */
   const handleOrientation = useCallback((event: DeviceOrientationEvent) => {
     const data = {
@@ -111,98 +109,126 @@ export default function App() {
     };
     setGyroData(data);
 
-    // Broadcast if enabled
-    if (isBroadcasting && targetWindowRef.current) {
-      try {
-        if (targetWindowRef.current.closed) {
-          setIsBroadcasting(false);
-          setBroadcastError("Target window was closed.");
-          targetWindowRef.current = null;
-          return;
-        }
-        targetWindowRef.current.postMessage({
-          type: 'GYRO_DATA',
-          payload: data,
-          timestamp: Date.now()
-        }, targetOrigin);
-        setBroadcastError(null);
-      } catch (err) {
-        setBroadcastError("Failed to send data.");
+    // Fallback for Compass if Magnetometer API is missing
+    if (!isMagSupported || magData.isSimulated) {
+      let heading: number | null = null;
+      
+      // iOS special property
+      if ((event as any).webkitCompassHeading !== undefined) {
+        heading = (event as any).webkitCompassHeading;
+      } else if (event.alpha !== null) {
+        // Standard absolute heading (if absolute: true)
+        heading = (360 - event.alpha) % 360;
+      }
+
+      if (heading !== null) {
+        setCalculatedHeading(heading);
+        
+        // "Simulate" X/Y/Z vectors for the UI if API is missing
+        // This is purely for look & feel so the fields aren't empty
+        const hRad = heading * (Math.PI / 180);
+        setMagData({
+          x: Math.cos(hRad) * 40,
+          y: Math.sin(hRad) * 40,
+          z: -20,
+          isSimulated: true
+        });
       }
     }
-  }, [isBroadcasting, targetOrigin]);
+
+    // Broadcast
+    if (isBroadcasting && targetWindowRef.current) {
+      try {
+        if (!targetWindowRef.current.closed) {
+          targetWindowRef.current.postMessage({ type: 'GYRO_DATA', payload: data, timestamp: Date.now() }, targetOrigin);
+        } else {
+          setIsBroadcasting(false);
+          targetWindowRef.current = null;
+        }
+      } catch (err) { /* ignore */ }
+    }
+  }, [isBroadcasting, targetOrigin, isMagSupported, magData.isSimulated]);
 
   /**
-   * Permission & Initialization
+   * Motion handler for generic tilt calculation fallback
    */
+  const handleMotion = useCallback((event: DeviceMotionEvent) => {
+    if (event.accelerationIncludingGravity) {
+      setAccelData({
+        x: event.accelerationIncludingGravity.x,
+        y: event.accelerationIncludingGravity.y,
+        z: event.accelerationIncludingGravity.z,
+      });
+    }
+  }, []);
+
   useEffect(() => {
-    // Check support
     setIsGyroSupported(!!window.DeviceOrientationEvent);
     
-    // Magnetometer API is newer/experimental on web
-    const hasMag = 'Magnetometer' in window && 'Accelerometer' in window;
-    setIsMagSupported(hasMag);
+    // Check Magnetometer (Standard but strictly gated)
+    const hasMagAPI = 'Magnetometer' in window && 'Accelerometer' in window;
+    setIsMagSupported(hasMagAPI);
 
     return () => {
       window.removeEventListener('deviceorientation', handleOrientation);
+      window.removeEventListener('devicemotion', handleMotion);
     };
-  }, [handleOrientation]);
+  }, [handleOrientation, handleMotion]);
 
-  /**
-   * Request permission for sensors
-   */
   const requestPermission = async () => {
-    // 1. DeviceOrientation Permission (iOS requirement)
+    // 1. DeviceOrientation & Motion (iOS requirement)
     if (typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
       try {
         const response = await (DeviceOrientationEvent as any).requestPermission();
         if (response === 'granted') {
           setPermissionStatus('granted');
           window.addEventListener('deviceorientation', handleOrientation);
+          
+          if (typeof (DeviceMotionEvent as any).requestPermission === 'function') {
+            await (DeviceMotionEvent as any).requestPermission();
+          }
+          window.addEventListener('devicemotion', handleMotion);
         } else {
           setPermissionStatus('denied');
-          setError("Permission denied.");
         }
       } catch (err) {
-        setError("Error requesting permission.");
+        setError("Sensor access failed.");
       }
     } else {
       setPermissionStatus('granted');
       window.addEventListener('deviceorientation', handleOrientation);
+      window.addEventListener('devicemotion', handleMotion);
     }
 
-    // 2. Initialize Magnetometer & Accelerometer if supported (Generic Sensor API)
-    if (isMagSupported) {
+    // 2. Try Magnetometer API (Mostly Android/Chrome with flags)
+    if ('Magnetometer' in window) {
       try {
         const mag = new window.Magnetometer({ frequency: 30 });
         const acc = new window.Accelerometer({ frequency: 30 });
 
         mag.addEventListener('reading', () => {
-          const newData = { x: mag.x, y: mag.y, z: mag.z };
-          setMagData(newData);
+          setMagData({ x: mag.x, y: mag.y, z: mag.z, isSimulated: false });
+          setIsMagSupported(true);
         });
 
         acc.addEventListener('reading', () => {
-          const newData = { x: acc.x, y: acc.y, z: acc.z };
-          setAccelData(newData);
+          setAccelData({ x: acc.x, y: acc.y, z: acc.z });
         });
 
         mag.start();
         acc.start();
       } catch (e) {
-        console.warn("Magnetometer failed to start:", e);
+        console.warn("Magnetometer API access denied by browser.");
+        // Fallback info already handled via isMagSupported being false/simulated
       }
     }
   };
 
-  /**
-   * Calculation bridge
-   */
   useEffect(() => {
     if (permissionStatus === 'granted') {
       calculateCompassValues(magData, accelData);
     }
-  }, [magData, accelData, permissionStatus]);
+  }, [magData, accelData, permissionStatus, calculateCompassValues]);
 
   // --- Navigation Helpers ---
 
@@ -330,7 +356,9 @@ export default function App() {
 
       {/* Raw Data Card */}
       <section className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100">
-        <h2 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">Raw Magnetic Field (μT)</h2>
+        <h2 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">
+          {magData.isSimulated ? 'Estimated Magnetic Vector' : 'Raw Magnetic Field (μT)'}
+        </h2>
         <div className="grid grid-cols-3 gap-4">
           {[
             { label: 'X', val: magData.x, color: 'text-rose-500' },
@@ -343,9 +371,9 @@ export default function App() {
             </div>
           ))}
         </div>
-        {!isMagSupported && (
-           <p className="mt-4 text-[10px] text-amber-600 bg-amber-50 p-2 rounded-lg flex items-center gap-1">
-             <AlertCircle size={10} /> Note: Magnetometer API not supported.
+        {magData.isSimulated && (
+           <p className="mt-4 text-[8px] text-amber-600 bg-amber-50 p-2 rounded-lg flex items-center gap-1 leading-tight">
+             <AlertCircle size={10} /> Rohe Magnetometer-Daten werden von diesem Browser blockiert. Die Werte werden aus der Geräteorientierung geschätzt.
            </p>
         )}
       </section>
