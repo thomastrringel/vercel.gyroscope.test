@@ -109,34 +109,40 @@ export default function App() {
     };
     setGyroData(data);
 
-    // Fallback for Compass if Magnetometer API is missing
-    if (!isMagSupported || magData.isSimulated) {
-      let heading: number | null = null;
-      
-      // iOS special property
-      if ((event as any).webkitCompassHeading !== undefined) {
-        heading = (event as any).webkitCompassHeading;
-      } else if (event.alpha !== null) {
-        // Standard absolute heading (if absolute: true)
-        heading = (360 - event.alpha) % 360;
-      }
+    // Fallback for Compass if Magnetometer API is missing or blocked
+    let heading: number | null = null;
+    
+    // 1. iOS special property
+    if ((event as any).webkitCompassHeading !== undefined) {
+      heading = (event as any).webkitCompassHeading;
+    } 
+    // 2. Absolute orientation (often provided by deviceorientationabsolute)
+    else if (event.absolute && event.alpha !== null) {
+      heading = (360 - event.alpha) % 360;
+    }
+    // 3. Last resort alpha
+    else if (event.alpha !== null) {
+      heading = (360 - event.alpha) % 360;
+    }
 
-      if (heading !== null) {
-        setCalculatedHeading(heading);
+    if (heading !== null) {
+      setCalculatedHeading(heading);
+      
+      // Update magData ONLY if the real API isn't working
+      setMagData(prev => {
+        if (!prev.isSimulated && isMagSupported) return prev;
         
-        // "Simulate" X/Y/Z vectors for the UI if API is missing
-        // This is purely for look & feel so the fields aren't empty
-        const hRad = heading * (Math.PI / 180);
-        setMagData({
+        const hRad = (heading! * Math.PI) / 180;
+        return {
           x: Math.cos(hRad) * 40,
           y: Math.sin(hRad) * 40,
           z: -20,
           isSimulated: true
-        });
-      }
+        };
+      });
     }
 
-    // Broadcast
+    // Broadcast logic
     if (isBroadcasting && targetWindowRef.current) {
       try {
         if (!targetWindowRef.current.closed) {
@@ -147,7 +153,7 @@ export default function App() {
         }
       } catch (err) { /* ignore */ }
     }
-  }, [isBroadcasting, targetOrigin, isMagSupported, magData.isSimulated]);
+  }, [isBroadcasting, targetOrigin, isMagSupported]);
 
   /**
    * Motion handler for generic tilt calculation fallback
@@ -162,18 +168,24 @@ export default function App() {
     }
   }, []);
 
+  // --- Effect: Manage Event Listeners ---
   useEffect(() => {
     setIsGyroSupported(!!window.DeviceOrientationEvent);
-    
-    // Check Magnetometer (Standard but strictly gated)
     const hasMagAPI = 'Magnetometer' in window && 'Accelerometer' in window;
     setIsMagSupported(hasMagAPI);
 
+    if (permissionStatus === 'granted') {
+      window.addEventListener('deviceorientation', handleOrientation);
+      window.addEventListener('deviceorientationabsolute', handleOrientation);
+      window.addEventListener('devicemotion', handleMotion);
+    }
+
     return () => {
       window.removeEventListener('deviceorientation', handleOrientation);
+      window.removeEventListener('deviceorientationabsolute', handleOrientation);
       window.removeEventListener('devicemotion', handleMotion);
     };
-  }, [handleOrientation, handleMotion]);
+  }, [permissionStatus, handleOrientation, handleMotion]);
 
   const requestPermission = async () => {
     // 1. DeviceOrientation & Motion (iOS requirement)
@@ -181,13 +193,10 @@ export default function App() {
       try {
         const response = await (DeviceOrientationEvent as any).requestPermission();
         if (response === 'granted') {
-          setPermissionStatus('granted');
-          window.addEventListener('deviceorientation', handleOrientation);
-          
           if (typeof (DeviceMotionEvent as any).requestPermission === 'function') {
             await (DeviceMotionEvent as any).requestPermission();
           }
-          window.addEventListener('devicemotion', handleMotion);
+          setPermissionStatus('granted');
         } else {
           setPermissionStatus('denied');
         }
@@ -195,9 +204,8 @@ export default function App() {
         setError("Sensor access failed.");
       }
     } else {
+      // Android / Older browsers
       setPermissionStatus('granted');
-      window.addEventListener('deviceorientation', handleOrientation);
-      window.addEventListener('devicemotion', handleMotion);
     }
 
     // 2. Try Magnetometer API (Mostly Android/Chrome with flags)
@@ -218,8 +226,7 @@ export default function App() {
         mag.start();
         acc.start();
       } catch (e) {
-        console.warn("Magnetometer API access denied by browser.");
-        // Fallback info already handled via isMagSupported being false/simulated
+        console.warn("Magnetometer API access denied.");
       }
     }
   };
